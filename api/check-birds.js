@@ -21,7 +21,7 @@ const auth = new google.auth.GoogleAuth({
 });
 const sheets = google.sheets({ version: "v4", auth });
 
-// 3. HELPER FUNCTIONS (Must be defined before handler)
+// 3. HELPER FUNCTIONS
 async function fetchEbird(endpoint) {
   const res = await fetch(`https://api.ebird.org/v2/data/obs/geo/${endpoint}?lat=${LAT}&lng=${LNG}&dist=${DIST}`, {
     headers: { "X-eBirdApiToken": EBIRD_API_KEY }
@@ -78,6 +78,7 @@ export default async function handler(req, res) {
     const unseenSciNames = new Set(unseenBirds.map(b => b.Latin2?.trim().toLowerCase()).filter(Boolean));
     const matches = [];
 
+    // Process eBird Matches
     recent.forEach(s => {
       const sciLower = s.sciName?.trim().toLowerCase();
       if (unseenSciNames.has(sciLower)) {
@@ -85,8 +86,10 @@ export default async function handler(req, res) {
           pk_id: s.subId,
           bird: s.comName,
           scientific: s.sciName,
-          lat: s.lat, lng: s.lng,
+          lat: s.lat,
+          lng: s.lng,
           location: s.locName,
+          is_private: s.locationPrivate === true ? "YES" : "NO", // Ebird Private Flag
           date: s.obsDt,
           source: "eBird",
           link: `https://ebird.org/checklist/${s.subId}`
@@ -94,10 +97,14 @@ export default async function handler(req, res) {
       }
     });
 
+    // Process iNat Matches
     inatRaw.forEach(obs => {
       const sci = obs.taxon?.name;
       const sciLower = sci?.trim().toLowerCase();
       if (unseenSciNames.has(sciLower)) {
+        // iNat Private Flag Check
+        const isPrivate = (obs.geoprivacy === 'obscured' || obs.geoprivacy === 'private') ? "YES" : "NO";
+        
         matches.push({
           pk_id: obs.id,
           bird: obs.taxon?.preferred_common_name || sci,
@@ -105,6 +112,7 @@ export default async function handler(req, res) {
           lat: obs.location?.split(',')[0],
           lng: obs.location?.split(',')[1],
           location: obs.place_guess || "Unknown",
+          is_private: isPrivate,
           date: obs.observed_on,
           source: "iNat",
           link: obs.uri
@@ -114,7 +122,11 @@ export default async function handler(req, res) {
 
     await writeToSheet("life_list_matches", matches);
 
-    res.status(200).json({ success: true, matches_found: matches.length });
+    res.status(200).json({ 
+        success: true, 
+        unseen_matches: matches.length,
+        timestamp: new Date().toLocaleString()
+    });
   } catch (err) {
     console.error("Handler Failure:", err.message);
     res.status(500).json({ error: err.message });
