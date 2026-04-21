@@ -25,7 +25,6 @@ const sheets = google.sheets({ version: "v4", auth });
 
 // 3. HELPER FUNCTIONS
 async function fetchEbirdRegion(endpoint, regionCode) {
-  // back=7 captures the last week of sightings
   const url = `https://api.ebird.org/v2/data/obs/${regionCode}/${endpoint}?back=7&maxResults=10000`;
   const res = await fetch(url, { headers: { "X-eBirdApiToken": EBIRD_API_KEY } });
   if (!res.ok) return [];
@@ -33,6 +32,7 @@ async function fetchEbirdRegion(endpoint, regionCode) {
 }
 
 async function fetchINat() {
+  // Pulling the latest 200 within 60 miles
   const url = `https://api.inaturalist.org/v1/observations?taxon_id=3&lat=${LAT}&lng=${LNG}&radius=60&per_page=200&order=desc&order_by=observed_on`;
   const res = await fetch(url);
   if (!res.ok) return [];
@@ -90,7 +90,7 @@ export default async function handler(req, res) {
     
     const matches = [];
 
-    // Map Sightings with Date Observed
+    // Map Sightings
     const allSightings = [
         ...recentEbird.map(s => ({ 
             pk_id: s.subId, 
@@ -99,7 +99,7 @@ export default async function handler(req, res) {
             lat: s.lat, 
             lng: s.lng, 
             loc: s.locName, 
-            date_observed: s.obsDt, // eBird date format: "YYYY-MM-DD HH:mm"
+            date_observed: s.obsDt, 
             priv: s.locationPrivate ? "YES" : "NO", 
             src: "eBird", 
             link: `https://ebird.org/checklist/${s.subId}` 
@@ -111,7 +111,8 @@ export default async function handler(req, res) {
             lat: obs.location?.split(',')[0], 
             lng: obs.location?.split(',')[1],
             loc: obs.place_guess || "iNat Spot", 
-            date_observed: obs.observed_on_details?.date || obs.observed_on, // iNat date
+            // USING time_observed_at OR observed_on_string to get the timestamp for iNat
+            date_observed: obs.time_observed_at || obs.observed_on_string || obs.observed_on,
             priv: (obs.geoprivacy ? "YES" : "NO"), 
             src: "iNat", 
             link: obs.uri
@@ -124,9 +125,11 @@ export default async function handler(req, res) {
         }
     });
 
-    // Deduplicate and Sort by Date (Most recent first)
+    // Deduplicate by Scientific Name
     const uniqueMatches = Array.from(new Map(matches.map(m => [m.sci.toLowerCase(), m])).values());
-    uniqueMatches.sort((a, b) => new Set(b.date_observed) > new Set(a.date_observed) ? 1 : -1);
+
+    // SORT ALPHABETICALLY BY SPECIES (BIRD NAME)
+    uniqueMatches.sort((a, b) => a.bird.localeCompare(b.bird));
 
     await writeToSheet("life_list_matches", uniqueMatches);
 
@@ -134,8 +137,7 @@ export default async function handler(req, res) {
       success: true,
       counts: {
         total_processed: allSightings.length,
-        unseen_matches: uniqueMatches.length,
-        last_updated: new Date().toLocaleString()
+        unseen_matches: uniqueMatches.length
       }
     });
 
