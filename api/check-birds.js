@@ -75,13 +75,13 @@ export default async function handler(req, res) {
       fetchLifeList(AMY_SHEET_ID)
     ]);
 
-    // 1. Split Life List into Seen vs Unseen
+    // 1. Filter Life List (Seen/Unseen)
     const unseenBirds = lifeListRaw.filter(b => !b.Seen || b.Seen.toString().toUpperCase() === 'FALSE');
     const seenBirds = lifeListRaw.filter(b => b.Seen && b.Seen.toString().toUpperCase() === 'TRUE');
 
-    // 2. Create Lookup Sets with strict trimming for the Join
-    const unseenSciNames = new Set(unseenBirds.map(b => b.Latin1?.trim().toLowerCase()).filter(Boolean));
-    const seenSciNames = new Set(seenBirds.map(b => b.Latin1?.trim().toLowerCase()).filter(Boolean));
+    // 2. JOIN ON LATIN2 (Scientific Name)
+    const unseenSciNames = new Set(unseenBirds.map(b => b.Latin2?.trim().toLowerCase()).filter(Boolean));
+    const seenSciNames = new Set(seenBirds.map(b => b.Latin2?.trim().toLowerCase()).filter(Boolean));
 
     const inatCleaned = inatRaw.map(obs => ({
       name: obs.taxon?.preferred_common_name || obs.taxon?.name || "Unknown",
@@ -90,7 +90,7 @@ export default async function handler(req, res) {
       date: obs.observed_on
     }));
 
-    // 3. THE JOINS
+    // 3. EXECUTE JOINS
     const unseenMatches = [];
     const seenMatches = [];
 
@@ -103,6 +103,7 @@ export default async function handler(req, res) {
         if (!s.sci) return;
         const sciLower = s.sci.trim().toLowerCase();
         
+        // We match eBird's 'sciName' against the checklist's 'Latin2'
         if (unseenSciNames.has(sciLower)) {
             unseenMatches.push({ ...s, category: "NEW LIFE BIRD" });
         } else if (seenSciNames.has(sciLower)) {
@@ -114,7 +115,7 @@ export default async function handler(req, res) {
     await writeToSheet("ebird_recent", recent);
     await writeToSheet("inat_birds", inatCleaned);
     await writeToSheet("amy_unseen", unseenBirds);
-    await writeToSheet("amy_seen_full", seenBirds); // NEW QC TAB
+    await writeToSheet("amy_seen_full", seenBirds);
     await writeToSheet("life_list_matches", unseenMatches);
     await writeToSheet("life_list_seen_matches", seenMatches);
 
