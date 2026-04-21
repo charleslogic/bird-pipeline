@@ -1,7 +1,7 @@
 export default function handler(req, res) {
   // Replace VAR_ONE and VAR_TWO with your actual variable names
-  const var1Status = process.env.VAR_ONE ? "Defined" : "Undefined";
-  const var2Status = process.env.VAR_TWO ? "Defined" : "Undefined";
+  const var1Status = process.env.EBIRD_API_KEY ? "Defined" : "Undefined";
+  const var2Status = process.env.CRON_SECRET ? "Defined" : "Undefined";
 
   res.status(200).json({
     ok: true,
