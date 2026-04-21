@@ -1,20 +1,22 @@
 import { google } from "googleapis";
 
 const EBIRD_API_KEY = process.env.EBIRD_API_KEY;
-
-// Arlington coords
 const LAT = 32.7357;
 const LNG = -97.1081;
 const DIST = 25;
 
 // ---------- GOOGLE SHEETS AUTH ----------
-const auth = new google.auth.JWT(
-  process.env.GOOGLE_CLIENT_EMAIL,
-  null,
-  process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-  ["https://www.googleapis.com/auth/spreadsheets"]
-);
+// Using GoogleAuth is the modern standard for Service Accounts
+const auth = new google.auth.GoogleAuth({
+  credentials: {
+    client_email: process.env.GOOGLE_CLIENT_EMAIL,
+    // The key needs to be wrapped in quotes if it contains spaces/newlines
+    private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+  },
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+});
 
+// PASS AUTH CORRECTLY: Needs to be inside the object
 const sheets = google.sheets({ version: "v4", auth });
 const SPREADSHEET_ID = process.env.SHEET_ID;
 
@@ -26,6 +28,7 @@ async function fetchEbird(endpoint) {
       headers: { "X-eBirdApiToken": EBIRD_API_KEY }
     }
   );
+  if (!res.ok) throw new Error(`eBird API error: ${res.statusText}`);
   return res.json();
 }
 
@@ -34,6 +37,7 @@ async function fetchINat() {
   const res = await fetch(
     `https://api.inaturalist.org/v1/observations?taxon_id=3&lat=${LAT}&lng=${LNG}&radius=40&per_page=200`
   );
+  if (!res.ok) throw new Error(`iNat API error: ${res.statusText}`);
   const data = await res.json();
   return data.results;
 }
@@ -42,13 +46,14 @@ async function fetchINat() {
 async function writeToSheet(tabName, data) {
   if (!data || data.length === 0) return;
 
-  // collect all keys dynamically
-  const keys = Array.from(
-    new Set(data.flatMap(obj => Object.keys(obj)))
-  );
+  const keys = Array.from(new Set(data.flatMap(obj => Object.keys(obj))));
 
   const rows = data.map(obj =>
-    keys.map(k => JSON.stringify(obj[k] ?? ""))
+    keys.map(k => {
+      const val = obj[k];
+      // Convert objects/arrays to strings, but keep strings/numbers clean
+      return typeof val === 'object' ? JSON.stringify(val) : (val ?? "");
+    })
   );
 
   await sheets.spreadsheets.values.clear({
@@ -72,6 +77,11 @@ async function writeToSheet(tabName, data) {
 // ---------- MAIN ----------
 export default async function handler(req, res) {
   try {
+    // Check if variables exist before running
+    if (!SPREADSHEET_ID || !process.env.GOOGLE_CLIENT_EMAIL) {
+      throw new Error("Missing Environment Variables");
+    }
+
     const [recent, notable, inat] = await Promise.all([
       fetchEbird("recent"),
       fetchEbird("recent/notable"),
@@ -83,13 +93,16 @@ export default async function handler(req, res) {
     await writeToSheet("inat_birds", inat);
 
     res.status(200).json({
-      ebird_recent: recent.length,
-      ebird_notable: notable.length,
-      inat: inat.length
+      success: true,
+      counts: {
+        ebird_recent: recent.length,
+        ebird_notable: notable.length,
+        inat: inat.length
+      }
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("Handler Error:", err.message);
     res.status(500).json({ error: err.message });
   }
 }
