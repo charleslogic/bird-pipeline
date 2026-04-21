@@ -1,8 +1,15 @@
 export default function handler(req, res) {
-  try {
-    res.setHeader('Content-Type', 'application/json');
-    return res.status(200).send(JSON.stringify({ ok: true }));
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
-  }
+  // Replace VAR_ONE and VAR_TWO with your actual variable names
+  const var1Status = process.env.VAR_ONE ? "Defined" : "Undefined";
+  const var2Status = process.env.VAR_TWO ? "Defined" : "Undefined";
+
+  res.status(200).json({
+    ok: true,
+    env_check: {
+      variable_one: var1Status,
+      variable_two: var2Status,
+    },
+    // Optional: Only show the first 3 chars if you really need to see it
+    // debug_hint: process.env.VAR_ONE?.substring(0, 3) + "..."
+  });
 }
