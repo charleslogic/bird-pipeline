@@ -9,7 +9,7 @@ export default async function handler(req, res) {
     `https://api.ebird.org/v2/data/obs/geo/recent?lat=${LAT}&lng=${LNG}&dist=${DIST}`;
 
   const r = await fetch(url, {
-    headers: { "X-eBirdApiToken": EBIRD_API_KEY }
+    headers: { "X-eBirdApiToken": EBIRD_API_KEY } 
   });
 
   const data = await r.json();
