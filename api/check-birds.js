@@ -79,7 +79,7 @@ export default async function handler(req, res) {
     const unseenBirds = lifeListRaw.filter(b => !b.Seen || b.Seen.toString().toUpperCase() === 'FALSE');
     const seenBirds = lifeListRaw.filter(b => b.Seen && b.Seen.toString().toUpperCase() === 'TRUE');
 
-    // 2. Create Lookup Sets (using Scientific Name / Latin1)
+    // 2. Create Lookup Sets with strict trimming for the Join
     const unseenSciNames = new Set(unseenBirds.map(b => b.Latin1?.trim().toLowerCase()).filter(Boolean));
     const seenSciNames = new Set(seenBirds.map(b => b.Latin1?.trim().toLowerCase()).filter(Boolean));
 
@@ -101,7 +101,7 @@ export default async function handler(req, res) {
 
     allCurrentSightings.forEach(s => {
         if (!s.sci) return;
-        const sciLower = s.sci.toLowerCase();
+        const sciLower = s.sci.trim().toLowerCase();
         
         if (unseenSciNames.has(sciLower)) {
             unseenMatches.push({ ...s, category: "NEW LIFE BIRD" });
@@ -110,15 +110,19 @@ export default async function handler(req, res) {
         }
     });
 
-    // 4. Update tabs (Add 'life_list_seen_matches' to your spreadsheet!)
+    // 4. Update tabs
     await writeToSheet("ebird_recent", recent);
     await writeToSheet("inat_birds", inatCleaned);
+    await writeToSheet("amy_unseen", unseenBirds);
+    await writeToSheet("amy_seen_full", seenBirds); // NEW QC TAB
     await writeToSheet("life_list_matches", unseenMatches);
     await writeToSheet("life_list_seen_matches", seenMatches);
 
     res.status(200).json({
       success: true,
       counts: {
+        unseen_on_list: unseenBirds.length,
+        seen_on_list: seenBirds.length,
         unseen_matches: unseenMatches.length,
         seen_but_active_now: seenMatches.length,
         total_recent_sightings: allCurrentSightings.length
