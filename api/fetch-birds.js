@@ -6,8 +6,8 @@ export default function handler(req, res) {
   res.status(200).json({
     ok: true,
     env_check: {
-      variable_one: var1Status,
-      variable_two: var2Status,
+      EBIRD_API_KEY: var1Status,
+      CRON_SECRET: var2Status,
     },
     // Optional: Only show the first 3 chars if you really need to see it
     // debug_hint: process.env.VAR_ONE?.substring(0, 3) + "..."
