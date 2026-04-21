@@ -82,8 +82,6 @@ async function appendToLog(tabName, logEntry) {
 // 4. MAIN HANDLER
 export default async function handler(req, res) {
   const startTime = Date.now();
-  
-  // Identify execution source
   const isCron = req.headers['x-vercel-cron'] === '1';
   const execType = isCron ? "CRON" : "MANUAL";
   
@@ -105,38 +103,55 @@ export default async function handler(req, res) {
     const unseenBirds = lifeListRaw.filter(b => !b.Seen || b.Seen.toString().toUpperCase() === 'FALSE');
     const unseenSciNames = new Set(unseenBirds.map(b => b.Latin2?.trim().toLowerCase()).filter(Boolean));
     
-    const matches = [];
+    const allMatchesRaw = []; 
+    const summaryMap = new Map();
     let ebirdHits = 0;
     let inatHits = 0;
 
-    const allSightings = [
-        ...recentEbird.map(s => ({ 
-            pk_id: s.subId, bird: s.comName, sci: s.sciName, lat: s.lat, lng: s.lng, 
-            loc: s.locName, date_observed: s.obsDt, priv: s.locationPrivate ? "YES" : "NO", 
-            src: "eBird", link: `https://ebird.org/checklist/${s.subId}` 
-        })),
-        ...inatRaw.map(obs => ({
-            pk_id: obs.id, bird: obs.taxon?.preferred_common_name || obs.taxon?.name, 
-            sci: obs.taxon?.name, lat: obs.location?.split(',')[0], lng: obs.location?.split(',')[1],
-            loc: obs.place_guess || "iNat Spot", 
-            date_observed: obs.time_observed_at || obs.observed_on_string || obs.observed_on,
-            priv: (obs.geoprivacy ? "YES" : "NO"), src: "iNat", link: obs.uri
-        }))
-    ];
+    const processSighting = (s, source) => {
+      const sci = (source === "eBird" ? s.sciName : s.taxon?.name);
+      if (!sci) return;
+      const key = sci.toLowerCase();
+      
+      if (unseenSciNames.has(key)) {
+        const sighting = {
+          pk_id: source === "eBird" ? s.subId : s.id,
+          bird: source === "eBird" ? s.comName : (s.taxon?.preferred_common_name || sci),
+          scientific: sci,
+          lat: source === "eBird" ? s.lat : s.location?.split(',')[0],
+          lng: source === "eBird" ? s.lng : s.location?.split(',')[1],
+          location: source === "eBird" ? s.locName : (s.place_guess || "iNat Spot"),
+          date_observed: source === "eBird" ? s.obsDt : (s.time_observed_at || s.observed_on_string || s.observed_on),
+          is_private: source === "eBird" ? (s.locationPrivate ? "YES" : "NO") : (s.geoprivacy ? "YES" : "NO"),
+          source: source,
+          link: source === "eBird" ? `https://ebird.org/checklist/${s.subId}` : s.uri
+        };
 
-    allSightings.forEach(s => {
-        if (s.sci && unseenSciNames.has(s.sci.trim().toLowerCase())) {
-            matches.push(s);
-            if (s.src === "eBird") ebirdHits++;
-            if (s.src === "iNat") inatHits++;
+        allMatchesRaw.push(sighting);
+        if (source === "eBird") ebirdHits++; else inatHits++;
+
+        if (summaryMap.has(key)) {
+          const entry = summaryMap.get(key);
+          entry.sighting_count++;
+          if (new Date(sighting.date_observed) > new Date(entry.date_observed)) {
+            Object.assign(entry, sighting, { sighting_count: entry.sighting_count });
+          }
+        } else {
+          summaryMap.set(key, { ...sighting, sighting_count: 1 });
         }
-    });
+      }
+    };
 
-    // Deduplicate and Sort Alpha by Bird Name
-    const uniqueMatches = Array.from(new Map(matches.map(m => [m.sci.toLowerCase(), m])).values());
-    uniqueMatches.sort((a, b) => a.bird.localeCompare(b.bird));
+    recentEbird.forEach(s => processSighting(s, "eBird"));
+    inatRaw.forEach(s => processSighting(s, "iNat"));
 
-    await writeToSheet("life_list_matches", uniqueMatches);
+    const summaryList = Array.from(summaryMap.values());
+    summaryList.sort((a, b) => a.bird.localeCompare(b.bird));
+    allMatchesRaw.sort((a, b) => new Date(b.date_observed) - new Date(a.date_observed));
+
+    // Write to all three functional tabs
+    await writeToSheet("life_list_matches", summaryList);
+    await writeToSheet("life_list_all_leads", allMatchesRaw);
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
     
@@ -144,23 +159,28 @@ export default async function handler(req, res) {
       timestamp: new Date().toLocaleString("en-US", { timeZone: "America/Chicago" }),
       type: execType,
       runtime_sec: duration,
-      processed: allSightings.length,
-      matches: uniqueMatches.length,
+      processed: (recentEbird.length + inatRaw.length),
+      unique_matches: summaryList.length,
+      total_leads: allMatchesRaw.length,
       ebird_hits: ebirdHits,
       inat_hits: inatHits,
       status: "SUCCESS"
     };
 
     await appendToLog("system_log", logEntry);
-
-    res.status(200).json({ success: true, execution: execType, runtime: `${duration}s` });
+    res.status(200).json({ success: true, matches: summaryList.length, leads: allMatchesRaw.length });
 
   } catch (err) {
-    const errorDuration = ((Date.now() - startTime) / 1000).toFixed(2);
+    const errorTime = ((Date.now() - startTime) / 1000).toFixed(2);
     const errorEntry = {
       timestamp: new Date().toLocaleString("en-US", { timeZone: "America/Chicago" }),
       type: execType,
-      runtime_sec: errorDuration,
+      runtime_sec: errorTime,
+      processed: 0,
+      unique_matches: 0,
+      total_leads: 0,
+      ebird_hits: 0,
+      inat_hits: 0,
       status: "ERROR",
       message: err.message
     };
