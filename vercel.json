@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/check-birds.js",
+      "schedule": "0 10 * * *"
+    }
+  ]
+}
