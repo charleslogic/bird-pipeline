@@ -1,134 +1,77 @@
-import { google } from "googleapis";
+// ... (Imports and Auth remain the same) ...
 
-// 1. CONSTANTS & ENV
-const EBIRD_API_KEY = process.env.EBIRD_API_KEY;
-const SPREADSHEET_ID = process.env.SHEET_ID;
-const AMY_SHEET_ID = process.env.SHEET_ID_AMY;
-const GOOGLE_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
-const GOOGLE_KEY = process.env.GOOGLE_PRIVATE_KEY;
+// List of nearby County Codes (Subnational2)
+// US-TX-439 = Tarrant, US-TX-113 = Dallas, US-TX-121 = Denton, US-TX-085 = Collin
+const REGIONS = ["US-TX-439", "US-TX-113", "US-TX-121", "US-TX-085"];
 
-const LAT = 32.7357;
-const LNG = -97.1081;
-const DIST = 25;
-
-// 2. AUTH SETUP
-const auth = new google.auth.GoogleAuth({
-  credentials: {
-    client_email: GOOGLE_EMAIL,
-    private_key: GOOGLE_KEY ? GOOGLE_KEY.replace(/\\n/g, "\n") : undefined,
-  },
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-});
-const sheets = google.sheets({ version: "v4", auth });
-
-// 3. HELPER FUNCTIONS
-async function fetchEbird(endpoint) {
-  const res = await fetch(`https://api.ebird.org/v2/data/obs/geo/${endpoint}?lat=${LAT}&lng=${LNG}&dist=${DIST}`, {
-    headers: { "X-eBirdApiToken": EBIRD_API_KEY }
-  });
-  if (!res.ok) throw new Error(`eBird Error: ${res.status}`);
+// ---------- FETCH EBIRD (BY REGION) ----------
+async function fetchEbirdRegion(endpoint, regionCode) {
+  const res = await fetch(
+    `https://api.ebird.org/v2/data/obs/${regionCode}/${endpoint}?back=7&maxResults=10000`,
+    { headers: { "X-eBirdApiToken": EBIRD_API_KEY } }
+  );
+  if (!res.ok) return []; // Return empty array if a specific region fails
   return res.json();
 }
 
-async function fetchINat() {
-  const res = await fetch(`https://api.inaturalist.org/v1/observations?taxon_id=3&lat=${LAT}&lng=${LNG}&radius=40&per_page=50`);
-  const data = await res.json();
-  return data.results;
-}
-
-async function fetchLifeList(id) {
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId: id,
-    range: "'ABA_Checklist-8.12.csv'!A3:H", 
-  });
-  const rows = response.data.values;
-  if (!rows || rows.length === 0) return [];
-  const headers = rows[0]; 
-  return rows.slice(1).map(row => {
-    let obj = {};
-    headers.forEach((header, i) => { obj[header] = row[i]; });
-    return obj;
-  });
-}
-
-async function writeToSheet(tabName, data) {
-  await sheets.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: `${tabName}!A:Z` });
-  if (!data || data.length === 0) return;
-  const keys = Array.from(new Set(data.flatMap(obj => Object.keys(obj))));
-  const rows = data.map(obj => keys.map(k => typeof obj[k] === 'object' ? JSON.stringify(obj[k]) : (obj[k] ?? "")));
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: SPREADSHEET_ID,
-    range: `${tabName}!A1`,
-    valueInputOption: "RAW",
-    requestBody: { values: [keys, ...rows] }
-  });
-}
-
-// 4. MAIN HANDLER
+// ---------- MAIN HANDLER ----------
 export default async function handler(req, res) {
   try {
-    const [recent, notable, inatRaw, lifeListRaw] = await Promise.all([
-      fetchEbird("recent"),
-      fetchEbird("recent/notable"),
+    // 1. Fetch Life List and iNat as usual
+    const [inatRaw, lifeListRaw] = await Promise.all([
       fetchINat(),
       fetchLifeList(AMY_SHEET_ID)
     ]);
 
+    // 2. Fetch eBird data for ALL DFW COUNTIES at once
+    // This effectively gives you a ~100 mile "box" of data
+    const ebirdRequests = REGIONS.map(reg => fetchEbirdRegion("recent", reg));
+    const notableRequests = REGIONS.map(reg => fetchEbirdRegion("recent/notable", reg));
+    
+    const ebirdResults = await Promise.all([...ebirdRequests, ...notableRequests]);
+    const recent = ebirdResults.flat(); // Merge all counties into one big list
+
+    // 3. Setup Joining Logic
     const unseenBirds = lifeListRaw.filter(b => !b.Seen || b.Seen.toString().toUpperCase() === 'FALSE');
     const unseenSciNames = new Set(unseenBirds.map(b => b.Latin2?.trim().toLowerCase()).filter(Boolean));
     const matches = [];
 
-    // Process eBird Matches
-    recent.forEach(s => {
-      const sciLower = s.sciName?.trim().toLowerCase();
-      if (unseenSciNames.has(sciLower)) {
-        matches.push({
-          pk_id: s.subId,
-          bird: s.comName,
-          scientific: s.sciName,
-          lat: s.lat,
-          lng: s.lng,
-          location: s.locName,
-          is_private: s.locationPrivate === true ? "YES" : "NO", // Ebird Private Flag
-          date: s.obsDt,
-          source: "eBird",
-          link: `https://ebird.org/checklist/${s.subId}`
-        });
+    // 4. THE JOIN (eBird + iNat)
+    const allCurrentSightings = [
+        ...recent.map(s => ({ 
+            pk_id: s.subId, bird: s.comName, sci: s.sciName, lat: s.lat, lng: s.lng, 
+            loc: s.locName, priv: s.locationPrivate ? "YES" : "NO", src: "eBird", 
+            link: `https://ebird.org/checklist/${s.subId}` 
+        })),
+        ...inatRaw.map(obs => ({
+            pk_id: obs.id, bird: obs.taxon?.preferred_common_name || obs.taxon?.name, 
+            sci: obs.taxon?.name, lat: obs.location?.split(',')[0], lng: obs.location?.split(',')[1],
+            loc: obs.place_guess || "iNat Spot", priv: (obs.geoprivacy ? "YES" : "NO"), src: "iNat", 
+            link: obs.uri
+        }))
+    ];
+
+    allCurrentSightings.forEach(s => {
+        if (s.sci && unseenSciNames.has(s.sci.trim().toLowerCase())) {
+            matches.push(s);
+        }
+    });
+
+    // 5. Deduplicate (Since a bird might be in multiple counties or sources)
+    const uniqueMatches = Array.from(new Map(matches.map(m => [m.sci, m])).values());
+
+    await writeToSheet("life_list_matches", uniqueMatches);
+
+    res.status(200).json({
+      success: true,
+      counts: {
+        total_records_analyzed: allCurrentSightings.length,
+        unique_unseen_matches: uniqueMatches.length
       }
     });
 
-    // Process iNat Matches
-    inatRaw.forEach(obs => {
-      const sci = obs.taxon?.name;
-      const sciLower = sci?.trim().toLowerCase();
-      if (unseenSciNames.has(sciLower)) {
-        // iNat Private Flag Check
-        const isPrivate = (obs.geoprivacy === 'obscured' || obs.geoprivacy === 'private') ? "YES" : "NO";
-        
-        matches.push({
-          pk_id: obs.id,
-          bird: obs.taxon?.preferred_common_name || sci,
-          scientific: sci,
-          lat: obs.location?.split(',')[0],
-          lng: obs.location?.split(',')[1],
-          location: obs.place_guess || "Unknown",
-          is_private: isPrivate,
-          date: obs.observed_on,
-          source: "iNat",
-          link: obs.uri
-        });
-      }
-    });
-
-    await writeToSheet("life_list_matches", matches);
-
-    res.status(200).json({ 
-        success: true, 
-        unseen_matches: matches.length,
-        timestamp: new Date().toLocaleString()
-    });
   } catch (err) {
-    console.error("Handler Failure:", err.message);
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 }
